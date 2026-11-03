@@ -116,10 +116,6 @@ code{font:inherit;font-size:10.5px;background:#f2f3f6;padding:0 3px;border-radiu
     routed are left out rather than sketched.</span></p>
   </div>
   <div class="grp">
-   <label>Day</label>
-   <select id="day"><option value="all">All 7 days</option></select>
-  </div>
-  <div class="grp">
    <label>Mode</label>
    <p class="note">Road / rail is toggled in the <b>map legend</b> (top right), so the same switches drive the map and every number here. Rail is read off the guideway — tram, HÉV, metro, rail.</p>
   </div>
@@ -422,7 +418,6 @@ function curFilter(){
   return {
     scope: document.getElementById('scope').value,
     scen:  document.getElementById('scen').value,
-    day:   document.getElementById('day').value,
     dmin:  (+document.getElementById('dmin').value||0)*1000,
     dmax:  (+document.getElementById('dmax').value||999)*1000
   };
@@ -432,27 +427,24 @@ function bandIdxSet(dmin, dmax){
   for (let b=0;b<5;b++) if (BANDM[b][0] < dmax && BANDM[b][1] > dmin) s.push(b);
   return s.length ? s : [0,1,2,3,4];
 }
-// Per-edge trip counts for the CURRENT filter, from the routed split vector.
-// Exact for day, for length, for day+length, and for scope alone. Scope combined with day or
-// length cannot be exact — the splits are stored as separate marginals — so we apply scope and
-// SAY SO in the legend rather than silently showing a number that ignores a filter.
+// Per-edge trip counts for the CURRENT filter, from the routed split vector. Always summed over
+// all 7 days (the day dimension was removed from the UI). Scope combined with length cannot be
+// exact — the splits are stored as separate marginals — so we apply scope and SAY SO in the legend
+// rather than silently showing a number that ignores a filter.
 function routedCounts(f){
   const n = RV.ns.length, out = new Float64Array(n);
   const bands = bandIdxSet(f.dmin, f.dmax);
-  const days  = f.day === 'all' ? [0,1,2,3,4,5,6] : [Math.max(0, DAYS.indexOf(f.day))];
-  const dayC  = f.day !== 'all';
   const bandC = !(f.dmin <= 0 && f.dmax >= 999000);
   const si = f.scope==='budapest'?0 : f.scope==='suburb_bp'?1 : f.scope==='suburb_local'?2 : -1;
   if (si >= 0){
-    volNote = (dayC || bandC) ? 'volume: scope only — day/length NOT applied here'
-                              : 'volume: scope';
+    volNote = bandC ? 'volume: scope only — length NOT applied here' : 'volume: scope';
     for (let i=0;i<n;i++){ const c = RV.ns[i]; out[i] = c ? c[35+si] : 0; }
   } else {
-    volNote = (dayC || bandC) ? 'volume: day + length' : 'volume: all trips';
+    volNote = bandC ? 'volume: length' : 'volume: all trips';
     for (let i=0;i<n;i++){
       const c = RV.ns[i]; if (!c) continue;
       let s = 0;
-      for (const d of days) for (const b of bands) s += c[d*5+b];
+      for (let d=0; d<7; d++) for (const b of bands) s += c[d*5+b];
       out[i] = s;
     }
   }
@@ -742,9 +734,6 @@ async function load(){
     for (const r of trows) ASTN.set(r.sid, r.stn_name);
   } catch (e) { ASTN = null; }
 
-  const days = [...new Set(D.day_tag)].sort();
-  const sel = document.getElementById('day');
-  for (const d of days){ const o=document.createElement('option'); o.value=d; o.textContent='May '+d; sel.appendChild(o); }
   document.getElementById('loading').remove();
   apply();
 }
@@ -753,7 +742,6 @@ function apply(){
   if(!D) return;
   const scope = document.getElementById('scope').value;
   const scen  = document.getElementById('scen').value;
-  const day   = document.getElementById('day').value;
   const dmin  = (+document.getElementById('dmin').value||0)*1000;
   const dmax  = (+document.getElementById('dmax').value||999)*1000;
   const usePoly = polyClosed && poly.length >= 3;
@@ -767,7 +755,6 @@ function apply(){
 
   for(let i=0;i<D.od_m.length;i++){
     if(scope!=='all' && D.trip_scope[i]!==scope) continue;
-    if(day!=='all' && D.day_tag[i]!==day) continue;
     inArea++;
     const m=D.od_m[i]; if(m<dmin||m>dmax) continue;
     if(scen!=='any' && !D[scen][i]) continue;
@@ -952,7 +939,7 @@ document.getElementById('altchk').addEventListener('change', e => {
   ALT_ON = e.target.checked;
   apply();
 });
-for (const id of ['scope','day','dmin','dmax']) document.getElementById(id).addEventListener('change', apply);
+for (const id of ['scope','dmin','dmax']) document.getElementById(id).addEventListener('change', apply);
 document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{
   const [a,b]=c.dataset.band.split(',');
   document.getElementById('dmin').value=a; document.getElementById('dmax').value=(+b>900?999:b);
