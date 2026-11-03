@@ -1,0 +1,8 @@
+.DS_Store
+db/
+out/
+data/
+*.duckdb
+*.gpkg
+budapest_gtfs/
+gtfsMavMenetrend/
