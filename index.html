@@ -208,7 +208,11 @@ const MB_STYLE = 'style.json';   // Bicyclize Monochrome, pre-converted for MapL
 
 const map = new maplibregl.Map({
   container:'map', style:MB_STYLE,
-  center:[19.06,47.50], zoom:11, attributionControl:false
+  center:[19.06,47.50], zoom:11, attributionControl:false,
+  // Mapbox's tileJSON hands out http:// tile URLs. On an https page (or a browser with
+  // HTTPS-upgrade) those get blocked as mixed content, so the basemap stays blank while the
+  // local GeoJSON layers still draw. Force every request onto https.
+  transformRequest: (url) => ({ url: url.startsWith('http://') ? 'https://' + url.slice(7) : url })
 });
 window.__map = map;      // test hook: lets the headless probes inspect the rendered layers
 
