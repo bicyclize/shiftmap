@@ -31,6 +31,9 @@ console.log('loaded:', await ev('window.__map.loaded()'));
 console.log('style name:', await ev('window.__map.getStyle()?.name'));
 console.log('style sources:', await ev('Object.keys(window.__map.getStyle()?.sources||{}).join(",")'));
 console.log('map container children:', await ev('document.getElementById("map").children.length'));
+console.log('RS routes:', await ev('window.__rs()'));
+console.log('matching n:', await ev('document.getElementById("n").textContent'));
+console.log('defaults (dmin-dmax):', await ev('[document.getElementById("dmin").value, document.getElementById("dmax").value].join("-")'));
 
 const bad = evs.filter(e=>e.method==='Network.responseReceived' && e.params.response.status>=400)
   .map(e=>e.params.response.status+' '+e.params.response.url.slice(-75));

@@ -83,12 +83,12 @@ code{font:inherit;font-size:10.5px;background:#f2f3f6;padding:0 3px;border-radiu
   </div>
   <div class="grp">
    <label>Trip length (straight-line km)</label>
-   <p class="note" style="margin:0 0 6px">Default minimum <b>0.3 km</b>: 40,286 trips (9%) have a
-    near-zero displacement — loops that return to where they started, median 2 m over a 41 km
-    path. They are not A→B trips and must not count as “could be a bike”. Set 0 to include them.</p>
+   <p class="note" style="margin:0 0 6px">Default range <b>1–50 km</b>. The very shortest trips are
+    near-zero displacement — loops that return to where they started, not A→B journeys — so a
+    minimum is applied by default. Set the minimum to 0 to include them.</p>
    <div class="row">
-    <div><input type="number" id="dmin" value="0.3" min="0" step="0.1"/></div>
-    <div><input type="number" id="dmax" value="999" min="0" step="0.5"/></div>
+    <div><input type="number" id="dmin" value="1" min="0" step="0.1"/></div>
+    <div><input type="number" id="dmax" value="50" min="0" step="0.5"/></div>
    </div>
    <div class="chips" style="margin-top:8px">
     <span class="chip" data-band="0,2">≤2 km</span>
@@ -657,89 +657,101 @@ function schemaNames(md){
 }
 
 async function load(){
-  const buf = await (await fetch(DATA)).arrayBuffer();
+  const [dbuf, vbuf, gbuf, nbuf, lbuf] = await Promise.all([
+    fetch(DATA).then(r => r.arrayBuffer()),
+    fetch(ROUTEDVOL).then(r => r.arrayBuffer()),
+    fetch(ROUTEDGEOM).then(r => r.arrayBuffer()),
+    fetch(RAILMODE).then(r => r.arrayBuffer()),
+    fetch(ROUTELEN).then(r => r.arrayBuffer()),
+  ]);
   let have = null;
-  try { have = schemaNames(parquetMetadata(buf)); } catch (e) { /* fall back to requesting everything */ }
+  try { have = schemaNames(parquetMetadata(dbuf)); } catch (e) { /* fall back to requesting everything */ }
   const cols = (have && have.size) ? COLS.filter(c => have.has(c)) : COLS;
-  const rows = await parquetReadObjects({ file: buf, compressors, columns: cols });
+  const rows = await parquetReadObjects({ file: dbuf, compressors, columns: cols });
   D = {}; for (const c of cols) D[c] = new Array(rows.length);
   for (let i=0;i<rows.length;i++){ const r=rows[i]; for (const c of cols) D[c][i] = (typeof r[c]==='bigint' ? Number(r[c]) : r[c]); }
 
   // routed volumes per edge → the thickness layer
   try {
-    const rb = await (await fetch(ROUTEDVOL)).arrayBuffer();
-    const rm = schemaNames(parquetMetadata(rb));
+    const rm = schemaNames(parquetMetadata(vbuf));
     const rcols = ['len_m', 'n', 'ns', 'xy', 'kind'].filter(c => rm.has(c));
-    const rrows = await parquetReadObjects({ file: rb, compressors, columns: rcols });
+    const rrows = await parquetReadObjects({ file: vbuf, compressors, columns: rcols });
     RV = {}; for (const c of rcols) RV[c] = rrows.map(r => typeof r[c] === 'bigint' ? Number(r[c]) : r[c]);
-  } catch (e) { RV = null; }
+  } catch (e) { RV = null; console.warn('routed volumes failed to load:', e); }
   // the CALCULATED ROUTE for every trip — the only geometry this app ever draws or tests
   try {
-    const gb = await (await fetch(ROUTEDGEOM)).arrayBuffer();
-    const grows = await parquetReadObjects({ file: gb, compressors, columns: ['i','xy'] });
+    const grows = await parquetReadObjects({ file: gbuf, compressors, columns: ['i','xy'] });
     RS = new Map();
     for (const r of grows) RS.set(typeof r.i === 'bigint' ? Number(r.i) : r.i, r.xy);
-  } catch (e) { RS = null; }
+  } catch (e) { RS = null; console.warn('route geometry failed to load:', e); }
   // first-pass rail-corridor proxy per trip
   try {
-    const nb = await (await fetch(RAILMODE)).arrayBuffer();
-    const nrows = await parquetReadObjects({ file: nb, compressors, columns: ['i','mode','rail_share'] });
+    const nrows = await parquetReadObjects({ file: nbuf, compressors, columns: ['i','mode','rail_share'] });
     RM = { mode: new Array(rows.length), share: new Array(rows.length) };
     for (const r of nrows){
       const i = typeof r.i === 'bigint' ? Number(r.i) : r.i;
       RM.mode[i] = r.mode;
       RM.share[i] = typeof r.rail_share === 'bigint' ? Number(r.rail_share) : r.rail_share;
     }
-  } catch (e) { RM = null; }
+  } catch (e) { RM = null; console.warn('rail mode failed to load:', e); }
   // Which NETWORK each drawn route follows. This is the flag the rail/road toggles act on: a
   // rail-corridor trip that could not be routed on a single guided system keeps its ROAD route, and
   // must be drawn and counted as road or hiding the road network would still leave it on screen.
   try {
-    const lb = await (await fetch(ROUTELEN)).arrayBuffer();
-    const lrows = await parquetReadObjects({ file: lb, compressors, columns: ['i','on_rail'] });
+    const lrows = await parquetReadObjects({ file: lbuf, compressors, columns: ['i','on_rail'] });
     RL = { on_rail: new Uint8Array(rows.length) };
     for (const r of lrows){
       const i = typeof r.i === 'bigint' ? Number(r.i) : r.i;
       RL.on_rail[i] = r.on_rail ? 1 : 0;
     }
-  } catch (e) { RL = null; }
+  } catch (e) { RL = null; console.warn('route network flag failed to load:', e); }
 
-  // THE ALTERNATIVE PATH — the routed bike / train / foot legs per scenario (67_alt_routes.py).
-  // Keyed `${tripIndex}|${scenario}` because one trip can qualify for several scenarios.
-  try {
-    const ab = await (await fetch(ALTROUTES)).arrayBuffer();
-    const arows = await parquetReadObjects({ file: ab, compressors,
-      columns:['i','scen','leg','mode','xy','s_stn','e_stn','s_lon','s_lat','e_lon','e_lat'] });
-    ALT = new Map();
-    for (const r of arows){
-      const i = typeof r.i === 'bigint' ? Number(r.i) : r.i;
-      const k = i + '|' + r.scen;
-      let a = ALT.get(k); if (!a){ a = []; ALT.set(k, a); }
-      a.push({leg: (typeof r.leg==='bigint'?Number(r.leg):r.leg), mode: r.mode, xy: r.xy,
-              s_stn: r.s_stn, e_stn: r.e_stn,
-              s_lon: r.s_lon, s_lat: r.s_lat, e_lon: r.e_lon, e_lat: r.e_lat});
-    }
-    for (const a of ALT.values()) a.sort((x,y)=>x.leg-y.leg);
-  } catch (e) { ALT = null; }
-  try {
-    const sb = await (await fetch(ALTSUM)).arrayBuffer();
-    const srows = await parquetReadObjects({ file: sb, compressors,
-      columns:['i','scen','bike_m','train_m','foot_m'] });
-    AS = new Map();
-    for (const r of srows){
-      const i = typeof r.i === 'bigint' ? Number(r.i) : r.i;
-      AS.set(i + '|' + r.scen, {bike_m:+r.bike_m, train_m:+r.train_m, foot_m:+r.foot_m});
-    }
-  } catch (e) { AS = null; }
-  try {
-    const tb = await (await fetch(ALTSTN)).arrayBuffer();
-    const trows = await parquetReadObjects({ file: tb, compressors, columns:['sid','stn_name'] });
-    ASTN = new Map();
-    for (const r of trows) ASTN.set(r.sid, r.stn_name);
-  } catch (e) { ASTN = null; }
+  // The alternative path (bike/train/foot legs) loads lazily in loadAlt() — it's ~20 MB and only
+  // needed when "Show the alternative path" is ticked, so it isn't fetched up front.
 
+  window.__rs = () => (RS ? RS.size : -1);   // test hook
   document.getElementById('loading').remove();
   apply();
+}
+
+// Lazily fetch + parse the alternative-path files (only when the user ticks the box).
+let ALT_LOADING = null;
+function loadAlt(){
+  if (ALT_LOADING) return ALT_LOADING;
+  ALT_LOADING = (async () => {
+    try {
+      const [ab, sb, tb] = await Promise.all([
+        fetch(ALTROUTES).then(r => r.arrayBuffer()),
+        fetch(ALTSUM).then(r => r.arrayBuffer()),
+        fetch(ALTSTN).then(r => r.arrayBuffer()),
+      ]);
+      const arows = await parquetReadObjects({ file: ab, compressors,
+        columns:['i','scen','leg','mode','xy','s_stn','e_stn','s_lon','s_lat','e_lon','e_lat'] });
+      ALT = new Map();
+      for (const r of arows){
+        const i = typeof r.i === 'bigint' ? Number(r.i) : r.i;
+        const k = i + '|' + r.scen;
+        let a = ALT.get(k); if (!a){ a = []; ALT.set(k, a); }
+        a.push({leg: (typeof r.leg==='bigint'?Number(r.leg):r.leg), mode: r.mode, xy: r.xy,
+                s_stn: r.s_stn, e_stn: r.e_stn,
+                s_lon: r.s_lon, s_lat: r.s_lat, e_lon: r.e_lon, e_lat: r.e_lat});
+      }
+      for (const a of ALT.values()) a.sort((x,y)=>x.leg-y.leg);
+      const srows = await parquetReadObjects({ file: sb, compressors,
+        columns:['i','scen','bike_m','train_m','foot_m'] });
+      AS = new Map();
+      for (const r of srows){
+        const i = typeof r.i === 'bigint' ? Number(r.i) : r.i;
+        AS.set(i + '|' + r.scen, {bike_m:+r.bike_m, train_m:+r.train_m, foot_m:+r.foot_m});
+      }
+      const trows = await parquetReadObjects({ file: tb, compressors, columns:['sid','stn_name'] });
+      ASTN = new Map();
+      for (const r of trows) ASTN.set(r.sid, r.stn_name);
+    } catch (e) { ALT = AS = ASTN = null; console.warn('alternative paths failed to load:', e); }
+    window.__alt = () => (ALT ? ALT.size : -1);   // test hook
+    return true;
+  })();
+  return ALT_LOADING;
 }
 
 function apply(){
@@ -939,8 +951,9 @@ document.getElementById('scen').addEventListener('change', () => {
   ALT_ON = on;
   apply();
 });
-document.getElementById('altchk').addEventListener('change', e => {
+document.getElementById('altchk').addEventListener('change', async e => {
   ALT_ON = e.target.checked;
+  if (ALT_ON && !ALT) await loadAlt();
   apply();
 });
 for (const id of ['scope','dmin','dmax']) document.getElementById(id).addEventListener('change', apply);
